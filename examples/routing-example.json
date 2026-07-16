@@ -1,0 +1,121 @@
+{
+  "title": "Understanding Request Routing",
+  "slug": "request-routing",
+  "summary": "Learn how the new routing system dispatches requests to handlers.",
+  "background": {
+    "intro": "Before diving into the change, let's understand the request flow.",
+    "mental_model": "Imagine a postal system: routes are like mailboxes sorted by address.",
+    "components": [
+      {
+        "name": "Router",
+        "role": "Maps incoming requests to handlers",
+        "description": "Central dispatcher for HTTP requests"
+      },
+      {
+        "name": "Handler",
+        "role": "Processes the request",
+        "description": "Function that responds to a specific route"
+      }
+    ],
+    "prior": "Previously, routing was handled by a flat switch statement that became unwieldy as the application grew."
+  },
+  "intuition": {
+    "intro": "The core insight is that routing should be composable and hierarchical.",
+    "core_idea": "Routes are organized in a tree structure, allowing reusable sub-routers and middleware chains.",
+    "old_behavior": "Routes were stored in a flat map, forcing all routes to be registered at the top level.",
+    "new_behavior": "Routes can now be nested hierarchically, with sub-routers composed into parent routers.",
+    "trade_offs_edge_cases": "Trade-off: slightly more complex setup code for significantly greater flexibility and maintainability."
+  },
+  "code": {
+    "intro": "Here's how the implementation achieves this composability.",
+    "subsections": [
+      {
+        "title": "Router Structure",
+        "explanation": "The Router struct now uses a tree of route handlers, enabling hierarchical organization.",
+        "blocks": [
+          {
+            "language": "go",
+            "code": "type Router struct {\n    routes   map[string]Handler\n    children map[string]*Router\n    middleware []Middleware\n}",
+            "file": "router.go",
+            "start_line": 10,
+            "end_line": 14,
+            "caption": "Router structure now supports nesting and middleware chains"
+          }
+        ],
+        "consequences": "This allows dynamic route registration, composition, and middleware injection at any level of the hierarchy."
+      },
+      {
+        "title": "Registering Routes",
+        "explanation": "Routes are registered using a fluent API that supports method chaining.",
+        "blocks": [
+          {
+            "language": "go",
+            "code": "api := NewRouter()\napi.Get(\"/users\", getUsersHandler)\napi.Post(\"/users\", createUserHandler)\n\nadmin := NewRouter()\nadmin.Get(\"/dashboard\", dashboardHandler)\n\nroot := NewRouter()\nroot.Mount(\"/api\", api)\nroot.Mount(\"/admin\", admin)",
+            "file": "main.go",
+            "start_line": 42,
+            "end_line": 54,
+            "caption": "Composing routers creates a clean hierarchical structure"
+          }
+        ],
+        "consequences": "Routes at /api/users and /admin/dashboard are now cleanly separated while sharing common middleware."
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "What is the primary benefit of the new hierarchical routing system?",
+      "options": [
+        "It processes requests faster than the old flat structure",
+        "It allows composable and reusable route hierarchies with middleware support",
+        "It reduces memory usage by sharing route definitions",
+        "It eliminates the need for regular expressions in routes"
+      ],
+      "correct_idx": 1,
+      "explanation": "The hierarchical design enables composition of routers, reusable sub-routers, and middleware chains at any level. While performance is a consideration, the core value is in structure and maintainability."
+    },
+    {
+      "question": "How do sub-routers get attached to parent routers in the new implementation?",
+      "options": [
+        "Via a flat global registry that all routers reference",
+        "Using environment variables to configure route paths",
+        "Through the Mount() method, which attaches a router to a parent at a specific path prefix",
+        "By modifying a global route table at application startup"
+      ],
+      "correct_idx": 2,
+      "explanation": "The Mount() method is the mechanism for composing routers. Calling root.Mount(\"/api\", apiRouter) attaches the apiRouter to the root at the /api path prefix."
+    },
+    {
+      "question": "What problem did the old flat-structure routing have?",
+      "options": [
+        "It was too performant and complicated the codebase unnecessarily",
+        "It couldn't handle GET and POST requests simultaneously",
+        "It became difficult to organize and maintain routes as the application grew",
+        "It required compilation before routes could be registered"
+      ],
+      "correct_idx": 2,
+      "explanation": "The old switch-statement based routing didn't scale well, forcing all routes into a single namespace and making middleware and composition difficult."
+    },
+    {
+      "question": "In the new Router struct, what does the 'children' field represent?",
+      "options": [
+        "Handlers that process requests for child resources",
+        "A map of sub-routers that have been mounted at specific path prefixes",
+        "Request logging destinations for child routes",
+        "Backup routers used if the primary router fails"
+      ],
+      "correct_idx": 1,
+      "explanation": "The 'children' map stores sub-routers that have been mounted via Mount(). Each entry is a prefix path mapping to another Router instance."
+    },
+    {
+      "question": "Which of the following is a trade-off introduced by the hierarchical routing design?",
+      "options": [
+        "Routes can no longer support dynamic path parameters",
+        "Slightly more complex initial setup code in exchange for much greater flexibility",
+        "Middleware can only be applied to the root router, not sub-routers",
+        "Routes must be registered at compile time rather than runtime"
+      ],
+      "correct_idx": 1,
+      "explanation": "The trade-off is that developers need to understand and compose routers, but in exchange they gain powerful composition, modularity, and middleware capabilities that were hard to achieve before."
+    }
+  ]
+}
