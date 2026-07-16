@@ -1,0 +1,158 @@
+{
+  "title": "Explaining the Recent explain-html-gen Diff",
+  "slug": "explain-html-gen-self-diff",
+  "summary": "This walkthrough explains three related changes: safer default output paths for snap-confined browsers, randomized quiz answer ordering, and a cross-target build script for Linux and Windows on AMD64/ARM64.",
+  "date": "2026-07-16",
+  "author": "Local diff analysis",
+  "background": {
+    "intro": "The generator takes structured JSON and emits a single self-contained HTML page with interactive quiz behavior. The CLI decides where to write that page, the builder composes markup and script data, and a validator checks structural constraints.",
+    "mental_model": "Think of the toolchain as three layers: input schema -> HTML builder -> runtime quiz interaction. The diff modifies each layer's reliability boundaries rather than adding a new feature area.",
+    "components": [
+      {
+        "name": "CLI output path resolver",
+        "description": "Chooses default destination when --output is omitted and creates missing directories.",
+        "role": "Ensures generated files are reachable by local tooling and browsers"
+      },
+      {
+        "name": "Quiz card formatter",
+        "description": "Builds each quiz question card, option list, and embedded correct-index metadata consumed by JavaScript.",
+        "role": "Controls both visible option order and correctness mapping"
+      },
+      {
+        "name": "Cross-target build script",
+        "description": "Compiles binaries for Linux and Windows across amd64 and arm64 architectures.",
+        "role": "Produces distributable binaries from one command"
+      }
+    ],
+    "prior": "Previously, default output went to /tmp, which can fail for snap-confined Firefox file access. Quiz options were rendered in source order, making correctness position predictable from input if not randomized elsewhere. Multi-arch builds required manual one-off commands."
+  },
+  "intuition": {
+    "intro": "The unifying idea is practical robustness: make the generated artifact easier to open, make quiz outcomes harder to guess by position, and make binaries easier to ship.",
+    "core_idea": "Move defaults toward user-accessible locations, add explicit option shuffling with correct-index remapping, and codify cross-compilation in one repeatable script.",
+    "old_behavior": "Default path was fixed at /tmp, quiz option order matched input ordering, and platform builds were ad-hoc.",
+    "new_behavior": "Default path now prefers ~/Downloads then home, quiz options are shuffled via Fisher-Yates and correctness is remapped, and one script emits Linux/Windows artifacts for amd64 and arm64.",
+    "trade_offs_edge_cases": "Randomization may still occasionally look uneven for only five questions, so validator warnings can appear heuristically. Also, output path selection now depends on home-directory availability and Downloads existence."
+  },
+  "code": {
+    "intro": "The diff clusters into three execution paths: path resolution in CLI runtime, question rendering in builder logic, and release artifact generation in shell scripting.",
+    "subsections": [
+      {
+        "title": "Default Output Path Migration",
+        "explanation": "The CLI now builds a filename once and chooses a destination by accessibility priority: Downloads, then home, then /tmp fallback.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "cmd/explain-html-gen/main.go",
+            "start_line": 96,
+            "end_line": 113,
+            "code": "filename := fmt.Sprintf(\"%s-explanation-%s.html\", date, slug)\n// Prefer ~/Downloads so snap-confined browsers (e.g. Firefox snap) can\n// access the file. Fall back to the user home dir, then /tmp.\nhomeDir, err := os.UserHomeDir()\nif err != nil {\n    homeDir = \"\"\n}\ndownloadsDir := filepath.Join(homeDir, \"Downloads\")\nif homeDir != \"\" {\n    if info, statErr := os.Stat(downloadsDir); statErr == nil && info.IsDir() {\n        outPath = filepath.Join(downloadsDir, filename)\n    } else {\n        outPath = filepath.Join(homeDir, filename)\n    }\n} else {\n    outPath = filepath.Join(\"/tmp\", filename)\n}",
+            "caption": "The default destination changes from a hardcoded /tmp to a browser-friendly preference chain."
+          }
+        ],
+        "consequences": "Users can usually open generated files directly in Firefox snap without moving files manually, while still preserving a deterministic fallback."
+      },
+      {
+        "title": "Quiz Option Randomization With Correct Remapping",
+        "explanation": "The builder creates one RNG per page build, shuffles each question's options, and stores the remapped correct index in data attributes.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/generator/builder.go",
+            "start_line": 263,
+            "end_line": 267,
+            "code": "rng := rand.New(rand.NewSource(time.Now().UnixNano()))\n\nfor i, q := range b.input.Quiz {\n    section += b.formatQuizCard(i, q, rng)\n}",
+            "caption": "A runtime seed means repeated generations do not reuse the same question-order mapping."
+          },
+          {
+            "language": "go",
+            "file": "pkg/generator/builder.go",
+            "start_line": 275,
+            "end_line": 310,
+            "code": "func shuffleOptions(options []string, correctIdx int, rng *rand.Rand) ([]string, int) {\n    if len(options) <= 1 {\n        return options, correctIdx\n    }\n\n    type indexedOption struct {\n        value   string\n        origIdx int\n    }\n    indexed := make([]indexedOption, len(options))\n    for i, v := range options {\n        indexed[i] = indexedOption{value: v, origIdx: i}\n    }\n\n    for i := len(indexed) - 1; i > 0; i-- {\n        j := rng.Intn(i + 1)\n        indexed[i], indexed[j] = indexed[j], indexed[i]\n    }\n\n    shuffled := make([]string, len(indexed))\n    newCorrectIdx := 0\n    for i, opt := range indexed {\n        shuffled[i] = opt.value\n        if opt.origIdx == correctIdx {\n            newCorrectIdx = i\n        }\n    }\n\n    return shuffled, newCorrectIdx\n}",
+            "caption": "Correctness stays semantically stable even though display order changes."
+          }
+        ],
+        "consequences": "Readers can no longer infer correctness from static option position in generated markup; quiz feedback remains accurate because the index is remapped."
+      },
+      {
+        "title": "Codified Multi-Arch Build Outputs",
+        "explanation": "A shell script now compiles four targets in one run: Linux and Windows for amd64 and arm64.",
+        "blocks": [
+          {
+            "language": "bash",
+            "file": "build-windows-exe.sh",
+            "start_line": 12,
+            "end_line": 26,
+            "code": "echo \"Building Linux executables...\"\n\nfor arch in amd64 arm64; do\n  output=\"$OUT_DIR/${APP_NAME}-linux-${arch}\"\n  GOOS=linux GOARCH=\"$arch\" CGO_ENABLED=0 go build -o \"$output\" \"$ENTRYPOINT\"\ndone\n\necho \"Building Windows executables...\"\n\nfor arch in amd64 arm64; do\n  output=\"$OUT_DIR/${APP_NAME}-windows-${arch}.exe\"\n  GOOS=windows GOARCH=\"$arch\" CGO_ENABLED=0 go build -o \"$output\" \"$ENTRYPOINT\"\ndone",
+            "caption": "Target matrix is explicit and reproducible from a single script invocation."
+          }
+        ],
+        "consequences": "Release prep becomes less error-prone by eliminating manual architecture flag repetition."
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "Why did the default output location change away from always using /tmp?",
+      "options": [
+        "To reduce generated file size by using a faster filesystem path",
+        "To avoid write permissions that Go lacks when running without sudo",
+        "To improve accessibility for snap-confined browsers that may not read /tmp",
+        "To guarantee that all files are automatically deleted after browser close"
+      ],
+      "correct_idx": 2,
+      "explanation": "The change targets browser accessibility, especially snap-confined Firefox environments where /tmp access can fail even when file generation succeeded."
+    },
+    {
+      "question": "What makes the new quiz randomization preserve correctness after shuffling?",
+      "options": [
+        "It stores only the original index and compares against an unshuffled copy at click time",
+        "It tracks each option's original index during shuffle and computes a new correct index",
+        "It keeps correct answers in position two and shuffles only distractors for consistency",
+        "It relies on JavaScript to discover the right answer from explanation text heuristics"
+      ],
+      "correct_idx": 1,
+      "explanation": "The shuffle logic pairs option text with original indices, then determines the remapped position where the original correct option landed."
+    },
+    {
+      "question": "What should you infer if the validator still warns about answer-position balance on some runs?",
+      "options": [
+        "Randomization is definitely broken because any warning proves deterministic ordering",
+        "The generator now validates wrong because data-correct-idx is no longer emitted",
+        "The warning is heuristic and can trigger with only five samples even when shuffling works",
+        "The quiz file is malformed and must contain exactly six questions for valid distribution"
+      ],
+      "correct_idx": 2,
+      "explanation": "Balance checks over five questions are small-sample heuristics. A skew in one generated page does not imply shuffle failure."
+    },
+    {
+      "question": "Why does the build script set CGO_ENABLED=0 across all target builds?",
+      "options": [
+        "It avoids cross-compilation failures caused by host C toolchain dependencies",
+        "It enables faster HTML rendering by disabling JavaScript in generated pages",
+        "It ensures Windows binaries are packaged with GTK modules automatically",
+        "It forces static routing tables to be embedded at compile time in the quiz logic"
+      ],
+      "correct_idx": 0,
+      "explanation": "Disabling CGO keeps cross-builds portable because targets do not depend on host-specific C compilers or runtime libraries."
+    },
+    {
+      "question": "Which path selection behavior is implemented when --output is omitted?",
+      "options": [
+        "Use /tmp first, then Downloads, then current working directory",
+        "Use home directory first, then /tmp, and never attempt Downloads",
+        "Use Downloads if it exists under home, else home, else /tmp",
+        "Use the repository root to keep generated pages version-controlled by default"
+      ],
+      "correct_idx": 2,
+      "explanation": "The code checks for a home directory, prefers home/Downloads when present, otherwise falls back to home and finally /tmp if home is unavailable."
+    }
+  ],
+  "diagrams": [
+    {
+      "type": "flow",
+      "title": "Output Path Resolution",
+      "description": "no-op placeholder"
+    }
+  ]
+}

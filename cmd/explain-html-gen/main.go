@@ -93,7 +93,23 @@ func main() {
 			date = time.Now().Format("2006-01-02")
 		}
 		slug := input.Slug
-		outPath = filepath.Join("/tmp", fmt.Sprintf("%s-explanation-%s.html", date, slug))
+		filename := fmt.Sprintf("%s-explanation-%s.html", date, slug)
+		// Prefer ~/Downloads so snap-confined browsers (e.g. Firefox snap) can
+		// access the file. Fall back to the user home dir, then /tmp.
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			homeDir = ""
+		}
+		downloadsDir := filepath.Join(homeDir, "Downloads")
+		if homeDir != "" {
+			if info, statErr := os.Stat(downloadsDir); statErr == nil && info.IsDir() {
+				outPath = filepath.Join(downloadsDir, filename)
+			} else {
+				outPath = filepath.Join(homeDir, filename)
+			}
+		} else {
+			outPath = filepath.Join("/tmp", filename)
+		}
 	}
 
 	// Ensure output directory exists

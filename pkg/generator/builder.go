@@ -3,6 +3,7 @@ package generator
 import (
 	"fmt"
 	"html"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -259,9 +260,10 @@ func (b *HTMLBuilder) addQuizSection() {
 	<p class="quiz-intro">Test your understanding with these five questions. Click an option to see the answer and explanation.</p>
 	<div class="quiz-container">
 `
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	for i, q := range b.input.Quiz {
-		section += b.formatQuizCard(i, q)
+		section += b.formatQuizCard(i, q, rng)
 	}
 
 	section += `	</div>
@@ -270,7 +272,43 @@ func (b *HTMLBuilder) addQuizSection() {
 	b.sections = append(b.sections, section)
 }
 
-func (b *HTMLBuilder) formatQuizCard(idx int, q schema.QuizQuestion) string {
+// shuffleOptions randomizes the order of quiz options using Fisher-Yates shuffle.
+// Returns the shuffled options and the updated index of the correct answer.
+func shuffleOptions(options []string, correctIdx int, rng *rand.Rand) ([]string, int) {
+	if len(options) <= 1 {
+		return options, correctIdx
+	}
+
+	// Track original indices
+	type indexedOption struct {
+		value   string
+		origIdx int
+	}
+	indexed := make([]indexedOption, len(options))
+	for i, v := range options {
+		indexed[i] = indexedOption{value: v, origIdx: i}
+	}
+
+	// Fisher-Yates shuffle
+	for i := len(indexed) - 1; i > 0; i-- {
+		j := rng.Intn(i + 1)
+		indexed[i], indexed[j] = indexed[j], indexed[i]
+	}
+
+	// Extract shuffled options and track new correct index
+	shuffled := make([]string, len(indexed))
+	newCorrectIdx := 0
+	for i, opt := range indexed {
+		shuffled[i] = opt.value
+		if opt.origIdx == correctIdx {
+			newCorrectIdx = i
+		}
+	}
+
+	return shuffled, newCorrectIdx
+}
+
+func (b *HTMLBuilder) formatQuizCard(idx int, q schema.QuizQuestion, rng *rand.Rand) string {
 	// Build the quiz card as a template that will be populated by JS
 	cardID := fmt.Sprintf("quiz-card-%d", idx)
 
@@ -281,8 +319,10 @@ func (b *HTMLBuilder) formatQuizCard(idx int, q schema.QuizQuestion) string {
 			<div class="quiz-options">
 `, cardID, idx+1, escapeAndFormatText(q.Question))
 
-	// Options are stored in data attributes; JS will randomize and display
-	for i, opt := range q.Options {
+	// Randomize option order for this question.
+	randomized, newCorrectIdx := shuffleOptions(q.Options, q.CorrectIdx, rng)
+
+	for i, opt := range randomized {
 		card += fmt.Sprintf(`				<label class="quiz-option" data-index="%d">
 					<input type="radio" name="%s" value="%d" aria-label="Option %d">
 					<span class="option-text">%s</span>
@@ -294,7 +334,7 @@ func (b *HTMLBuilder) formatQuizCard(idx int, q schema.QuizQuestion) string {
 			<div class="quiz-feedback" data-correct-idx="%d" data-explanation="%s" style="display: none;">
 			</div>
 		</div>
-`, q.CorrectIdx, html.EscapeString(q.Explanation))
+`, newCorrectIdx, html.EscapeString(q.Explanation))
 
 	return card
 }

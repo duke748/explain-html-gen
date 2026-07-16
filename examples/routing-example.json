@@ -65,10 +65,10 @@
     {
       "question": "What is the primary benefit of the new hierarchical routing system?",
       "options": [
-        "It processes requests faster than the old flat structure",
-        "It allows composable and reusable route hierarchies with middleware support",
-        "It reduces memory usage by sharing route definitions",
-        "It eliminates the need for regular expressions in routes"
+        "Better performance with faster request routing through optimized structures",
+        "Enables composable route hierarchies with full middleware chain support",
+        "Reduces memory usage significantly with better route sharing strategies",
+        "Eliminates all need for regular expressions in route pattern matching"
       ],
       "correct_idx": 1,
       "explanation": "The hierarchical design enables composition of routers, reusable sub-routers, and middleware chains at any level. While performance is a consideration, the core value is in structure and maintainability."
@@ -76,10 +76,10 @@
     {
       "question": "How do sub-routers get attached to parent routers in the new implementation?",
       "options": [
-        "Via a flat global registry that all routers reference",
-        "Using environment variables to configure route paths",
-        "Through the Mount() method, which attaches a router to a parent at a specific path prefix",
-        "By modifying a global route table at application startup"
+        "Through a flat global registry that all routers reference automatically",
+        "By setting environment variables to configure all route paths centrally",
+        "Through the Mount() method that attaches routers at specific path prefixes",
+        "By modifying a global route table during application startup initialization"
       ],
       "correct_idx": 2,
       "explanation": "The Mount() method is the mechanism for composing routers. Calling root.Mount(\"/api\", apiRouter) attaches the apiRouter to the root at the /api path prefix."
@@ -87,10 +87,10 @@
     {
       "question": "What problem did the old flat-structure routing have?",
       "options": [
-        "It was too performant and complicated the codebase unnecessarily",
-        "It couldn't handle GET and POST requests simultaneously",
-        "It became difficult to organize and maintain routes as the application grew",
-        "It required compilation before routes could be registered"
+        "It was too efficient and unnecessarily complicated the codebase design",
+        "It couldn't support multiple HTTP methods on the same request routes",
+        "As applications grew, organizing routes became difficult and error-prone",
+        "It required compilation before any routes could be dynamically registered"
       ],
       "correct_idx": 2,
       "explanation": "The old switch-statement based routing didn't scale well, forcing all routes into a single namespace and making middleware and composition difficult."
@@ -98,10 +98,10 @@
     {
       "question": "In the new Router struct, what does the 'children' field represent?",
       "options": [
-        "Handlers that process requests for child resources",
+        "A collection of handlers that process requests for child resource types",
         "A map of sub-routers that have been mounted at specific path prefixes",
-        "Request logging destinations for child routes",
-        "Backup routers used if the primary router fails"
+        "A logging destination for child routes to track all request metrics",
+        "A set of backup routers used as failover if the primary router fails"
       ],
       "correct_idx": 1,
       "explanation": "The 'children' map stores sub-routers that have been mounted via Mount(). Each entry is a prefix path mapping to another Router instance."
@@ -109,10 +109,10 @@
     {
       "question": "Which of the following is a trade-off introduced by the hierarchical routing design?",
       "options": [
-        "Routes can no longer support dynamic path parameters",
+        "Routes can no longer accept or support dynamic path parameters properly",
         "Slightly more complex initial setup code in exchange for much greater flexibility",
-        "Middleware can only be applied to the root router, not sub-routers",
-        "Routes must be registered at compile time rather than runtime"
+        "Middleware can only be applied to the root router and not to subrouters",
+        "All routes must be registered at compile time rather than at runtime"
       ],
       "correct_idx": 1,
       "explanation": "The trade-off is that developers need to understand and compose routers, but in exchange they gain powerful composition, modularity, and middleware capabilities that were hard to achieve before."
