@@ -1,5 +1,7 @@
 package schema
 
+import "github.com/benthompson/explain-html-gen/pkg/mermaid"
+
 // GeneratorInput defines the complete content structure for HTML generation.
 // The LM agent populates this and passes it as JSON.
 type GeneratorInput struct {
@@ -86,12 +88,14 @@ type QuizQuestion struct {
 // - "before_after": side-by-side panels showing behavior change
 // - "component_cards": labeled system boundaries
 // - "table": mapping/invariant/toy data table
+// - "mermaid": validated Mermaid flowchart source rendered as an offline diagram
 type Diagram struct {
 	Type    string `json:"type"` // "flow", "before_after", "component_cards", "table"
 	Title   string `json:"title"`
 	Caption string `json:"caption,omitempty"` // Text explanation alongside diagram
 
 	// Type-specific content
+	Mermaid      string          `json:"mermaid,omitempty"` // Mermaid flowchart source for type "mermaid"
 	FlowNodes    []FlowNode      `json:"flow_nodes,omitempty"`
 	FlowEdges    []FlowEdge      `json:"flow_edges,omitempty"`
 	BeforePanel  PanelContent    `json:"before_panel,omitempty"`
@@ -156,6 +160,22 @@ func (g *GeneratorInput) Validate() error {
 		}
 		if q.Explanation == "" {
 			return NewValidationError("quiz question %d has empty explanation", i+1)
+		}
+	}
+	for i, d := range g.Diagrams {
+		if d.Type == "" {
+			return NewValidationError("diagram %d has empty type", i+1)
+		}
+		if d.Title == "" {
+			return NewValidationError("diagram %d has empty title", i+1)
+		}
+		if d.Type == "mermaid" {
+			if d.Mermaid == "" {
+				return NewValidationError("diagram %d is type mermaid but has empty mermaid source", i+1)
+			}
+			if err := mermaid.Validate(d.Mermaid); err != nil {
+				return NewValidationError("diagram %d has invalid mermaid source: %v", i+1, err)
+			}
 		}
 	}
 	return nil

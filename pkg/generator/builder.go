@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benthompson/explain-html-gen/pkg/mermaid"
 	"github.com/benthompson/explain-html-gen/pkg/schema"
 )
 
@@ -35,6 +36,7 @@ func (b *HTMLBuilder) Build() (string, error) {
 	b.addHeader()
 	b.addTableOfContents()
 	b.addBackgroundSection()
+	b.addDiagramsSection()
 	b.addIntuitionSection()
 	b.addCodeSection()
 	b.addQuizSection()
@@ -107,7 +109,12 @@ func (b *HTMLBuilder) addTableOfContents() {
 	<h2>Contents</h2>
 	<ul>
 		<li><a href="#background">Background</a></li>
-		<li><a href="#intuition">Intuition</a></li>
+`
+	if len(b.input.Diagrams) > 0 {
+		toc += `		<li><a href="#diagrams">Diagrams</a></li>
+`
+	}
+	toc += `		<li><a href="#intuition">Intuition</a></li>
 		<li><a href="#code">Code</a></li>
 		<li><a href="#quiz">Quiz</a></li>
 	</ul>
@@ -155,6 +162,134 @@ func (b *HTMLBuilder) addBackgroundSection() {
 </section>`, escapeAndFormatText(bg.Prior))
 
 	b.sections = append(b.sections, section)
+}
+
+func (b *HTMLBuilder) addDiagramsSection() {
+	if len(b.input.Diagrams) == 0 {
+		return
+	}
+
+	section := `<section id="diagrams">
+	<h2>Diagrams</h2>
+	<div class="section-content">
+		<div class="diagram-tabs" data-diagram-tabs>
+			<div class="tab-list" role="tablist" aria-label="Diagrams">
+`
+
+	panels := ""
+	for i, diagram := range b.input.Diagrams {
+		tabID := fmt.Sprintf("diagram-tab-%d", i)
+		panelID := fmt.Sprintf("diagram-panel-%d", i)
+		selected := ""
+		hidden := " hidden"
+		tabIndex := "-1"
+		if i == 0 {
+			selected = ` aria-selected="true"`
+			hidden = ""
+			tabIndex = "0"
+		} else {
+			selected = ` aria-selected="false"`
+		}
+
+		section += fmt.Sprintf(`				<button id="%s" class="tab-button" role="tab" type="button" aria-controls="%s"%s tabindex="%s">%s</button>
+`, tabID, panelID, selected, tabIndex, html.EscapeString(diagram.Title))
+
+		panels += fmt.Sprintf(`			<div id="%s" class="tab-panel" role="tabpanel" aria-labelledby="%s"%s>
+%s			</div>
+`, panelID, tabID, hidden, b.formatDiagram(diagram))
+	}
+
+	section += `			</div>
+`
+	section += panels
+	section += `		</div>
+	</div>
+</section>`
+
+	b.sections = append(b.sections, section)
+}
+
+func (b *HTMLBuilder) formatDiagram(diagram schema.Diagram) string {
+	switch diagram.Type {
+	case "mermaid":
+		return b.formatMermaidDiagram(diagram)
+	default:
+		return fmt.Sprintf(`				<div class="callout callout-important">
+					<strong>Unsupported diagram type:</strong>
+					<p>%s</p>
+				</div>
+`, html.EscapeString(diagram.Type))
+	}
+}
+
+func (b *HTMLBuilder) formatMermaidDiagram(diagram schema.Diagram) string {
+	parsed, err := mermaid.Parse(diagram.Mermaid)
+	if err != nil {
+		return fmt.Sprintf(`				<div class="callout callout-important">
+					<strong>Invalid Mermaid:</strong>
+					<p>%s</p>
+				</div>
+`, html.EscapeString(err.Error()))
+	}
+
+	orientationClass := "diagram-vertical"
+	if parsed.Direction == "LR" || parsed.Direction == "RL" {
+		orientationClass = "diagram-horizontal"
+	}
+
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf(`				<figure class="mermaid-diagram %s">
+					<figcaption>
+						<strong>%s</strong>
+`, orientationClass, html.EscapeString(diagram.Title)))
+	if diagram.Caption != "" {
+		out.WriteString(fmt.Sprintf(`						<span>%s</span>
+`, escapeAndFormatText(diagram.Caption)))
+	}
+	out.WriteString(`					</figcaption>
+					<div class="mermaid-rendered" aria-label="Architecture diagram rendered from Mermaid source">
+`)
+
+	nodeLabels := make(map[string]string)
+	for _, node := range parsed.Nodes {
+		nodeLabels[node.ID] = node.Label
+	}
+
+	for i, edge := range parsed.Edges {
+		out.WriteString(fmt.Sprintf(`						<div class="mermaid-edge">
+							<div class="mermaid-node">
+								<span class="node-id">%s</span>
+								<span class="node-label">%s</span>
+							</div>
+`, html.EscapeString(edge.From), html.EscapeString(nodeLabels[edge.From])))
+		if edge.Label != "" {
+			out.WriteString(fmt.Sprintf(`							<div class="mermaid-arrow" aria-label="%s">&rarr; <span>%s</span></div>
+`, html.EscapeString(edge.Label), html.EscapeString(edge.Label)))
+		} else {
+			out.WriteString(`							<div class="mermaid-arrow" aria-hidden="true">&rarr;</div>
+`)
+		}
+		out.WriteString(fmt.Sprintf(`							<div class="mermaid-node">
+								<span class="node-id">%s</span>
+								<span class="node-label">%s</span>
+							</div>
+						</div>
+`, html.EscapeString(edge.To), html.EscapeString(nodeLabels[edge.To])))
+		if i < len(parsed.Edges)-1 {
+			out.WriteString(`						<div class="mermaid-edge-separator" aria-hidden="true"></div>
+`)
+		}
+	}
+
+	out.WriteString(fmt.Sprintf(`					</div>
+					<details class="mermaid-source">
+						<summary>Mermaid source</summary>
+						<pre><code style="white-space: pre-wrap; white-space: pre;">%s</code></pre>
+					</details>
+				</figure>
+`, html.EscapeString(diagram.Mermaid)))
+
+	return out.String()
 }
 
 func (b *HTMLBuilder) addIntuitionSection() {
@@ -576,6 +711,144 @@ section h3 {
 	border-top: 1px solid #ddd;
 }
 
+/* Diagrams */
+.diagram-tabs {
+	margin: 20px 0;
+}
+
+.tab-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 16px;
+	border-bottom: 1px solid #ddd;
+}
+
+.tab-button {
+	border: 1px solid #ddd;
+	border-bottom: 0;
+	border-radius: 6px 6px 0 0;
+	padding: 10px 14px;
+	background: #f8f8f8;
+	color: #333;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.tab-button[aria-selected="true"] {
+	background: white;
+	color: #0078d4;
+	border-color: #0078d4;
+}
+
+.tab-panel {
+	border: 1px solid #ddd;
+	border-radius: 0 6px 6px 6px;
+	padding: 18px;
+	background: white;
+}
+
+.mermaid-diagram {
+	margin: 0;
+}
+
+.mermaid-diagram figcaption {
+	display: grid;
+	gap: 4px;
+	margin-bottom: 16px;
+	color: #333;
+}
+
+.mermaid-diagram figcaption span {
+	color: #666;
+	font-size: 0.95rem;
+}
+
+.mermaid-rendered {
+	display: grid;
+	gap: 10px;
+	padding: 16px;
+	border: 1px solid #d8e6f3;
+	border-radius: 6px;
+	background: #f7fbff;
+	overflow-x: auto;
+}
+
+.mermaid-edge {
+	display: grid;
+	grid-template-columns: minmax(140px, 1fr) auto minmax(140px, 1fr);
+	gap: 12px;
+	align-items: center;
+	min-width: 0;
+}
+
+.mermaid-node {
+	display: grid;
+	gap: 4px;
+	border: 1px solid #9ec7ea;
+	border-radius: 6px;
+	padding: 12px;
+	background: white;
+	min-width: 0;
+}
+
+.node-id {
+	color: #0078d4;
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0;
+	text-transform: uppercase;
+}
+
+.node-label {
+	color: #333;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.mermaid-arrow {
+	display: grid;
+	gap: 2px;
+	justify-items: center;
+	color: #0078d4;
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+.mermaid-arrow span {
+	max-width: 160px;
+	color: #555;
+	font-size: 0.82rem;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+	white-space: normal;
+	text-align: center;
+}
+
+.mermaid-edge-separator {
+	height: 1px;
+	background: #d8e6f3;
+}
+
+.mermaid-source {
+	margin-top: 14px;
+}
+
+.mermaid-source summary {
+	cursor: pointer;
+	color: #0078d4;
+	font-weight: 600;
+}
+
+.mermaid-source pre {
+	margin-top: 10px;
+	padding: 12px;
+	overflow-x: auto;
+	border-radius: 6px;
+	background: #f8f8f8;
+}
+
 /* Quiz */
 #quiz {
 	margin-top: 60px;
@@ -735,6 +1008,18 @@ section h3 {
 	.code-block code {
 		font-size: 0.85rem;
 	}
+
+	.mermaid-edge {
+		grid-template-columns: 1fr;
+	}
+
+	.mermaid-arrow {
+		transform: rotate(90deg);
+	}
+
+	.mermaid-arrow span {
+		transform: rotate(-90deg);
+	}
 }
 
 @media (max-width: 480px) {
@@ -766,7 +1051,8 @@ section h3 {
 
 /* Focus states for accessibility */
 input:focus-visible,
-a:focus-visible {
+a:focus-visible,
+button:focus-visible {
 	outline: 2px solid #0078d4;
 	outline-offset: 2px;
 }
@@ -790,8 +1076,48 @@ a:focus-visible {
 
 func (b *HTMLBuilder) generateJavaScript() string {
 	return `
-// Quiz interaction logic
 document.addEventListener('DOMContentLoaded', function() {
+	initDiagramTabs();
+	initQuiz();
+});
+
+function initDiagramTabs() {
+	const tabGroups = document.querySelectorAll('[data-diagram-tabs]');
+
+	tabGroups.forEach(group => {
+		const tabs = Array.from(group.querySelectorAll('[role="tab"]'));
+		const panels = Array.from(group.querySelectorAll('[role="tabpanel"]'));
+
+		function selectTab(tab) {
+			tabs.forEach(item => {
+				const selected = item === tab;
+				item.setAttribute('aria-selected', selected ? 'true' : 'false');
+				item.setAttribute('tabindex', selected ? '0' : '-1');
+			});
+
+			panels.forEach(panel => {
+				panel.hidden = panel.id !== tab.getAttribute('aria-controls');
+			});
+		}
+
+		tabs.forEach((tab, idx) => {
+			tab.addEventListener('click', () => selectTab(tab));
+			tab.addEventListener('keydown', event => {
+				if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
+					return;
+				}
+				event.preventDefault();
+				const delta = event.key === 'ArrowRight' ? 1 : -1;
+				const next = tabs[(idx + delta + tabs.length) % tabs.length];
+				selectTab(next);
+				next.focus();
+			});
+		});
+	});
+}
+
+// Quiz interaction logic
+function initQuiz() {
 	const quizCards = document.querySelectorAll('.quiz-card');
 
 	quizCards.forEach(card => {
@@ -807,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', function() {
 			});
 		});
 	});
-});
+}
 
 function handleQuizAnswer(card, options, selectedIdx, correctIdx, explanation) {
 	const feedbackEl = card.querySelector('.quiz-feedback');

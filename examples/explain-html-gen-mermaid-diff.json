@@ -1,0 +1,159 @@
+{
+  "title": "Explaining the Mermaid Diagram Support Diff",
+  "slug": "explain-html-gen-mermaid-diff",
+  "summary": "This walkthrough explains the change that lets explain-html-gen accept validated Mermaid flowchart source, render it as an offline tabbed diagram section, and reject unsupported Mermaid before HTML generation.",
+  "date": "2026-07-16",
+  "author": "explain-diff-html",
+  "background": {
+    "intro": "The generator turns structured JSON into one self-contained HTML page. Before this change, the schema had a diagrams field, but the builder did not render diagram content and there was no Mermaid-specific validation path.",
+    "mental_model": "Think of Mermaid support as a gated adapter: JSON supplies Mermaid source, schema validation proves the source is in the supported subset, and the HTML builder renders a local diagram without loading Mermaid JavaScript from the network.",
+    "components": [
+      {
+        "name": "Mermaid parser package",
+        "role": "Validates and parses Mermaid source",
+        "description": "The new pkg/mermaid package accepts a small flowchart subset and reports line-specific errors for unsupported syntax."
+      },
+      {
+        "name": "Generator input schema",
+        "role": "Rejects bad diagram inputs early",
+        "description": "The Diagram struct now has a mermaid source field, and GeneratorInput.Validate calls the Mermaid validator for diagrams of type mermaid."
+      },
+      {
+        "name": "HTML builder",
+        "role": "Renders diagrams into the page",
+        "description": "The builder adds a Diagrams section, tab controls, local diagram markup, responsive CSS, and JavaScript for switching tabs."
+      }
+    ],
+    "prior": "Previously, Mermaid text could not be represented as a first-class diagram type. The generator had no way to validate Mermaid before rendering, and a skill could not get a precise error to repair invalid diagram source."
+  },
+  "intuition": {
+    "intro": "The change keeps the generated page offline-first while still allowing a skill to express architecture as Mermaid.",
+    "core_idea": "Accept only the Mermaid subset the Go code can understand, fail fast when the source is outside that subset, and render the accepted structure with local HTML, CSS, and JavaScript.",
+    "old_behavior": "Diagram input was effectively dormant for Mermaid use: a skill could mention diagrams, but this generator did not validate or display Mermaid as a rendered page section.",
+    "new_behavior": "A JSON diagram with type mermaid is parsed during input validation. Valid diagrams appear in a tabbed Diagrams section; invalid diagrams stop the CLI with an actionable validation error.",
+    "trade_offs_edge_cases": "This is not full Mermaid compatibility. Subgraphs, custom class definitions, click handlers, and style directives are rejected because the local renderer cannot safely or accurately reproduce them without a Mermaid runtime."
+  },
+  "code": {
+    "intro": "The implementation splits responsibility cleanly: parsing lives in pkg/mermaid, schema validation invokes it, and the builder handles presentation.",
+    "subsections": [
+      {
+        "title": "Mermaid Validation Boundary",
+        "explanation": "The parser accepts graph or flowchart headers, common directions, labeled nodes, and labeled edges. Unsupported Mermaid lines return a precise error instead of being rendered incorrectly.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/mermaid/mermaid.go",
+            "start_line": 35,
+            "end_line": 47,
+            "code": "func Validate(source string) error {\n    _, err := Parse(source)\n    return err\n}\n\n// Parse accepts a practical subset of Mermaid flowchart syntax:\n//\n//  graph TD\n//  A[Reader] -->|opens| B[HTML]\n//  B --> C[Quiz]\nfunc Parse(source string) (*Diagram, error) {",
+            "caption": "The public Validate function is intentionally small, so callers get the same parsing rules the renderer uses."
+          },
+          {
+            "language": "go",
+            "file": "pkg/mermaid/mermaid.go",
+            "start_line": 162,
+            "end_line": 170,
+            "code": "func unsupportedMermaidLine(line string) bool {\n    lower := strings.ToLower(strings.TrimSpace(line))\n    return strings.HasPrefix(lower, \"subgraph \") ||\n        lower == \"end\" ||\n        strings.Contains(lower, \":::\") ||\n        strings.Contains(lower, \"click \") ||\n        strings.Contains(lower, \"classdef \") ||\n        strings.Contains(lower, \"style \")\n}",
+            "caption": "The validator rejects syntax the local renderer does not claim to support."
+          }
+        ],
+        "consequences": "Skills can feed the CLI stderr back into a repair prompt when Mermaid is invalid, rather than discovering a broken diagram after page generation."
+      },
+      {
+        "title": "Schema-Level Rejection",
+        "explanation": "Validation happens before HTML generation, so invalid Mermaid cannot leak into a partial or misleading artifact.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/schema/input.go",
+            "start_line": 165,
+            "end_line": 179,
+            "code": "for i, d := range g.Diagrams {\n    if d.Type == \"\" {\n        return NewValidationError(\"diagram %d has empty type\", i+1)\n    }\n    if d.Title == \"\" {\n        return NewValidationError(\"diagram %d has empty title\", i+1)\n    }\n    if d.Type == \"mermaid\" {\n        if d.Mermaid == \"\" {\n            return NewValidationError(\"diagram %d is type mermaid but has empty mermaid source\", i+1)\n        }\n        if err := mermaid.Validate(d.Mermaid); err != nil {\n            return NewValidationError(\"diagram %d has invalid mermaid source: %v\", i+1, err)\n        }\n    }\n}",
+            "caption": "The error includes the diagram number and the parser error, which is enough context for an automated retry."
+          }
+        ],
+        "consequences": "The CLI exits nonzero for unsupported Mermaid, giving the calling skill a deterministic repair signal."
+      },
+      {
+        "title": "Tabbed Offline Rendering",
+        "explanation": "The builder inserts a Diagrams section only when diagrams are present, then renders each diagram as a tab panel with local markup and a source disclosure.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/generator/builder.go",
+            "start_line": 167,
+            "end_line": 215,
+            "code": "func (b *HTMLBuilder) addDiagramsSection() {\n    if len(b.input.Diagrams) == 0 {\n        return\n    }\n\n    section := `<section id=\"diagrams\">\n    <h2>Diagrams</h2>\n    <div class=\"section-content\">\n        <div class=\"diagram-tabs\" data-diagram-tabs>\n            <div class=\"tab-list\" role=\"tablist\" aria-label=\"Diagrams\">\n`\n\n    panels := \"\"\n    for i, diagram := range b.input.Diagrams {\n        tabID := fmt.Sprintf(\"diagram-tab-%d\", i)\n        panelID := fmt.Sprintf(\"diagram-panel-%d\", i)\n        ...\n    }\n}\n\nfunc (b *HTMLBuilder) formatDiagram(diagram schema.Diagram) string {\n    switch diagram.Type {\n    case \"mermaid\":\n        return b.formatMermaidDiagram(diagram)\n    default:\n        return fmt.Sprintf(`...`, html.EscapeString(diagram.Type))\n    }\n}",
+            "caption": "The new section is conditional, so older examples without diagrams keep the original page shape."
+          }
+        ],
+        "consequences": "Generated pages remain self-contained: the Mermaid view is rendered by this generator, not by a CDN or browser-side package."
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "Why does the change validate Mermaid before HTML generation begins?",
+      "options": [
+        "So unsupported syntax can fail fast with an error the skill can use for repair",
+        "So Mermaid JavaScript can be downloaded before the page is opened",
+        "So the CLI can skip normal JSON validation for diagram-heavy inputs",
+        "So all diagrams are converted into PNG files before writing HTML"
+      ],
+      "correct_idx": 0,
+      "explanation": "Validation runs during GeneratorInput.Validate, before builder output. That gives the caller a precise failure instead of a misleading rendered page."
+    },
+    {
+      "question": "Which Mermaid feature is intentionally rejected by the new parser?",
+      "options": [
+        "A graph TD or flowchart LR header",
+        "A simple labeled edge such as A -->|calls| B",
+        "A node label written as API[HTTP API]",
+        "A subgraph block with an end marker"
+      ],
+      "correct_idx": 3,
+      "explanation": "Subgraph syntax is outside the supported local-renderer subset, so the parser rejects lines starting with subgraph and the matching end line."
+    },
+    {
+      "question": "What keeps the generated HTML offline-first even with Mermaid input?",
+      "options": [
+        "The page links to Mermaid only when the browser already has it cached",
+        "The Go builder renders accepted Mermaid as local HTML and CSS markup",
+        "The validator strips diagrams from the page after checking them",
+        "The CLI embeds a base64 copy of the Mermaid npm package"
+      ],
+      "correct_idx": 1,
+      "explanation": "The builder parses the diagram and emits local markup, CSS, and small tab JavaScript. It does not depend on Mermaid JS or any external resource."
+    },
+    {
+      "question": "What information does a Mermaid validation failure include?",
+      "options": [
+        "Only a generic statement that the generated HTML is invalid",
+        "The browser console stack trace from Mermaid's renderer",
+        "The diagram number plus the parser's specific source problem",
+        "A complete rewritten Mermaid diagram suggested by the Go package"
+      ],
+      "correct_idx": 2,
+      "explanation": "Schema validation wraps parser errors as messages like diagram 1 has invalid mermaid source: unsupported mermaid syntax on line 2."
+    },
+    {
+      "question": "Why does the table of contents add the Diagrams link conditionally?",
+      "options": [
+        "Because older inputs without diagrams should not link to a missing section",
+        "Because diagrams are hidden until the quiz has been completed",
+        "Because the HTML validator requires exactly three table-of-contents links",
+        "Because the browser loads tab JavaScript only after a link is clicked"
+      ],
+      "correct_idx": 0,
+      "explanation": "The builder only creates the Diagrams section when the input includes diagrams, so the TOC link is added under the same condition."
+    }
+  ],
+  "diagrams": [
+    {
+      "type": "mermaid",
+      "title": "Mermaid Diff Flow",
+      "caption": "How Mermaid source moves from JSON input to validated offline HTML rendering.",
+      "mermaid": "flowchart LR\nInput[Generator Input] --> Validate[Mermaid Validate]\nValidate --> Build[HTML Builder]\nBuild --> Tabs[Diagram Tabs]\nBuild --> Source[Source Details]"
+    }
+  ]
+}

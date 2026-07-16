@@ -8,7 +8,7 @@ Generate beautiful, self-contained interactive HTML explanations from structured
 - **Responsive design**: Works on desktop, tablet, and mobile
 - **Interactive quiz**: Dynamically rendered with option randomization
 - **Code blocks**: Proper whitespace preservation, syntax-aware formatting
-- **Diagrams**: Reusable patterns for flow, before/after, components, and tables
+- **Diagrams**: Validated Mermaid flowcharts rendered offline in tabbed panels
 - **Accessible**: Focus states, semantic HTML, sufficient color contrast
 - **Offline-first**: No CDNs, network calls, or external fonts
 
@@ -107,7 +107,14 @@ The JSON input follows this structure:
       "explanation": "string explaining the correct answer and common misconceptions"
     }
   ],
-  "diagrams": []
+  "diagrams": [
+    {
+      "type": "mermaid",
+      "title": "Architecture",
+      "caption": "A high-level module flow.",
+      "mermaid": "flowchart LR\nReader[Reader] --> HTML[Generated HTML]\nHTML --> Quiz[Interactive Quiz]"
+    }
+  ]
 }
 ```
 
@@ -125,7 +132,7 @@ The JSON input follows this structure:
 
 - `date` — Defaults to today in YYYY-MM-DD format
 - `author` — Author attribution
-- `diagrams` — Additional diagrams (framework for future expansion)
+- `diagrams` — Optional tabbed diagrams. `type: "mermaid"` supports validated Mermaid flowcharts using `graph` or `flowchart` with directions `TD`, `TB`, `BT`, `LR`, or `RL`, labeled nodes, and labeled edges. Unsupported Mermaid fails input validation before HTML generation.
 
 ## Examples
 
@@ -244,8 +251,15 @@ The tool validates:
 - **Code block whitespace**: CSS includes `white-space: pre` rule
 - **Quiz interactivity**: JavaScript and quiz-card elements present
 - **Required sections**: Background, Intuition, Code, Quiz all present
+- **Mermaid input**: Mermaid diagram source is validated before rendering
 
 If validation fails, the tool exits with status 1 and explains the problem.
+
+For skill integration, invalid Mermaid can be repaired by catching stderr and passing
+the exact validation error plus the original Mermaid source back to the language
+model. For example: "The generator rejected this Mermaid diagram with
+`unsupported mermaid syntax on line 2`; rewrite it using the supported flowchart
+subset."
 
 ## Integration with explain-diff-html Skill
 

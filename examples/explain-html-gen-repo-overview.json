@@ -1,0 +1,176 @@
+{
+  "title": "Understanding explain-html-gen",
+  "slug": "explain-html-gen-repo-overview",
+  "summary": "A repo-level walkthrough of explain-html-gen: the CLI reads structured JSON, validates it, builds a self-contained interactive HTML page, validates the output, and writes a local file.",
+  "date": "2026-07-16",
+  "author": "explain-repo-html",
+  "background": {
+    "intro": "explain-html-gen is a small Go command-line tool used by explanation skills. Its job is not to inspect repositories by itself; it receives already-structured teaching content as JSON and turns that content into one portable HTML file with inline CSS, inline JavaScript, code blocks, diagrams, and an interactive quiz.",
+    "mental_model": "The repository is a compiler for explanations: JSON is the source language, schema validation is type checking, the HTML builder is code generation, and the output validator is the final quality gate before writing the file.",
+    "components": [
+      {
+        "name": "cmd/explain-html-gen",
+        "role": "CLI entry point",
+        "description": "Reads JSON from --input or --stdin, validates it, invokes the builder, validates generated HTML, chooses an output path, and writes the result."
+      },
+      {
+        "name": "pkg/schema",
+        "role": "Input contract",
+        "description": "Defines GeneratorInput, nested section structures, quiz questions, code blocks, and diagram input. It performs structural validation before generation."
+      },
+      {
+        "name": "pkg/generator",
+        "role": "HTML composition",
+        "description": "Builds the document head, table of contents, narrative sections, code blocks, optional diagram tabs, quiz markup, CSS, and JavaScript."
+      },
+      {
+        "name": "pkg/validator",
+        "role": "Output quality gate",
+        "description": "Checks that generated HTML is complete, offline-safe, has code whitespace rules, includes quiz interactivity, and contains required sections."
+      },
+      {
+        "name": "pkg/mermaid",
+        "role": "Diagram parser",
+        "description": "Validates and parses the supported Mermaid flowchart subset so diagrams can be rendered without external JavaScript."
+      }
+    ],
+    "prior": "Without this generator, each explanation skill would need to handcraft HTML, CSS, quiz behavior, escaping, and validation every time. This repo centralizes that repeated work behind one JSON contract."
+  },
+  "intuition": {
+    "intro": "The system is deliberately linear. Each phase accepts one artifact, makes it more concrete, and either returns a clear error or passes the artifact forward.",
+    "core_idea": "Keep language-model output structured and inspectable, then let deterministic Go code handle escaping, layout, quiz wiring, Mermaid validation, output validation, and filesystem writes.",
+    "old_behavior": "The generator's core shape already existed: read JSON, validate input, build HTML, validate output, and write a file. Recent additions expanded the diagram path and made Mermaid a first-class validated input type.",
+    "new_behavior": "A skill can now produce JSON with diagrams, including type mermaid entries. The CLI rejects invalid Mermaid early and renders valid diagrams as tabbed offline HTML alongside the standard explanation sections.",
+    "trade_offs_edge_cases": "The repo favors a compact standard-library Go implementation over a full browser rendering stack. That keeps the binary simple and offline, but means advanced Mermaid constructs are intentionally unsupported."
+  },
+  "code": {
+    "intro": "The codebase is organized around the data path from command-line input to written HTML output.",
+    "subsections": [
+      {
+        "title": "CLI Pipeline",
+        "explanation": "The command parses flags, reads JSON from stdin or a file, unmarshals into schema.GeneratorInput, validates input, builds HTML, validates output, and writes the destination file.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "cmd/explain-html-gen/main.go",
+            "start_line": 54,
+            "end_line": 79,
+            "code": "var input schema.GeneratorInput\nif err := json.Unmarshal(inputData, &input); err != nil {\n    fmt.Fprintf(os.Stderr, \"Error parsing JSON input: %v\\n\", err)\n    os.Exit(1)\n}\n\nif err := input.Validate(); err != nil {\n    fmt.Fprintf(os.Stderr, \"Input validation failed: %v\\n\", err)\n    os.Exit(1)\n}\n\nbuilder := generator.NewHTMLBuilder(&input)\nhtml, err := builder.Build()\nif err != nil {\n    fmt.Fprintf(os.Stderr, \"Error generating HTML: %v\\n\", err)\n    os.Exit(1)\n}\n\nv := validator.NewHTMLValidator(html)\nif err := v.Validate(); err != nil {\n    fmt.Fprintf(os.Stderr, \"Output validation failed: %v\\n\", err)\n    os.Exit(1)\n}",
+            "caption": "This is the main runtime contract: bad input fails before build, bad HTML fails before write."
+          }
+        ],
+        "consequences": "Calling skills get deterministic success or failure signals and do not need to duplicate the generator's validation steps."
+      },
+      {
+        "title": "Input Schema and Validation",
+        "explanation": "The schema package defines the JSON shape used by both examples and skills. It validates required metadata, exactly five quiz questions, option counts, correct answer indices, explanations, and Mermaid diagram source.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/schema/input.go",
+            "start_line": 5,
+            "end_line": 24,
+            "code": "type GeneratorInput struct {\n    Title   string `json:\"title\"`\n    Slug    string `json:\"slug\"`\n    Summary string `json:\"summary\"`\n    Date    string `json:\"date\"`\n    Author  string `json:\"author\"`\n\n    Background BackgroundSection `json:\"background\"`\n    Intuition  IntuitiveSection  `json:\"intuition\"`\n    Code       CodeSection       `json:\"code\"`\n\n    Quiz []QuizQuestion `json:\"quiz\"`\n\n    Diagrams []Diagram `json:\"diagrams,omitempty\"`\n}",
+            "caption": "The top-level struct is the single document model the builder consumes."
+          }
+        ],
+        "consequences": "Examples in this directory double as integration fixtures because they exercise the same public input model used by skills."
+      },
+      {
+        "title": "HTML Builder",
+        "explanation": "The builder accumulates full HTML sections in order, then joins them into a complete document. It owns the visual structure, inline styles, and JavaScript interactions.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/generator/builder.go",
+            "start_line": 29,
+            "end_line": 45,
+            "code": "func (b *HTMLBuilder) Build() (string, error) {\n    b.sections = make([]string, 0)\n\n    b.addHead()\n    b.addBodyStart()\n    b.addHeader()\n    b.addTableOfContents()\n    b.addBackgroundSection()\n    b.addDiagramsSection()\n    b.addIntuitionSection()\n    b.addCodeSection()\n    b.addQuizSection()\n    b.addBodyEnd()\n\n    return strings.Join(b.sections, \"\\n\"), nil\n}",
+            "caption": "The page structure is explicit, which makes it easy to see where new sections plug into the document."
+          }
+        ],
+        "consequences": "Feature additions such as diagram tabs can stay localized to builder methods plus CSS and JavaScript."
+      },
+      {
+        "title": "Output Validator",
+        "explanation": "After generation, the validator checks the HTML contract that the skills care about: complete document structure, no external dependencies, code whitespace preservation, quiz wiring, and required sections.",
+        "blocks": [
+          {
+            "language": "go",
+            "file": "pkg/validator/validator.go",
+            "start_line": 19,
+            "end_line": 37,
+            "code": "func (v *HTMLValidator) Validate() error {\n    checks := []func() error{\n        v.checkIsValidHTML,\n        v.checkNoExternalDependencies,\n        v.checkCodeBlocksPreserveWhitespace,\n        v.checkQuizInteractivity,\n        v.checkRequiredSections,\n    }\n\n    for _, check := range checks {\n        if err := check(); err != nil {\n            return err\n        }\n    }\n\n    return nil\n}",
+            "caption": "The output validator keeps the generated file aligned with the skill requirements."
+          }
+        ],
+        "consequences": "The CLI avoids writing an artifact that is structurally incomplete or unexpectedly dependent on the network."
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "What is explain-html-gen's main responsibility in the explanation workflow?",
+      "options": [
+        "Inspect a repository and decide what should be explained without structured input",
+        "Turn structured JSON explanation content into a validated self-contained HTML file",
+        "Host generated HTML pages on a remote service with shared authentication",
+        "Run Go tests and summarize failing packages in a Markdown report"
+      ],
+      "correct_idx": 1,
+      "explanation": "The skills do the analysis and produce JSON. explain-html-gen turns that JSON into an offline HTML artifact and validates the result."
+    },
+    {
+      "question": "Which package owns the GeneratorInput contract?",
+      "options": [
+        "pkg/schema",
+        "pkg/generator",
+        "pkg/validator",
+        "cmd/explain-html-gen"
+      ],
+      "correct_idx": 0,
+      "explanation": "pkg/schema defines the data structures and input validation used before the builder runs."
+    },
+    {
+      "question": "Why is output validation separate from input validation?",
+      "options": [
+        "Input validation checks the JSON contract, while output validation checks the generated HTML artifact",
+        "Output validation rewrites invalid quiz questions after the page has already been saved",
+        "Input validation is only used for stdin, while output validation is only used for files",
+        "Output validation replaces the need to escape HTML and JavaScript contexts"
+      ],
+      "correct_idx": 0,
+      "explanation": "The input and output artifacts have different contracts. JSON must be structurally valid; HTML must be complete, offline-safe, and interactive."
+    },
+    {
+      "question": "What does pkg/mermaid add to the architecture?",
+      "options": [
+        "A full browser-compatible Mermaid runtime embedded in every generated page",
+        "A parser and validator for the Mermaid flowchart subset the generator can render offline",
+        "A remote service call that converts diagrams into images before writing HTML",
+        "A replacement for the quiz JavaScript event listeners"
+      ],
+      "correct_idx": 1,
+      "explanation": "pkg/mermaid validates and parses a local flowchart subset. It does not embed Mermaid JS or call a network renderer."
+    },
+    {
+      "question": "What happens when the CLI receives invalid input JSON content?",
+      "options": [
+        "It writes the HTML anyway and lets the browser show any errors",
+        "It skips validation if an output path was provided explicitly",
+        "It prints an error to stderr and exits with a nonzero status",
+        "It silently removes invalid sections and continues with partial content"
+      ],
+      "correct_idx": 2,
+      "explanation": "The CLI exits on parse or validation failures before building or writing HTML, giving callers a clear failure signal."
+    }
+  ],
+  "diagrams": [
+    {
+      "type": "mermaid",
+      "title": "Repository Runtime Architecture",
+      "caption": "The main path from skill-generated JSON to a local HTML explanation file.",
+      "mermaid": "flowchart LR\nJSON[JSON Input] --> CLI[CLI]\nCLI --> Schema[Schema Validation]\nSchema --> Builder[HTML Builder]\nBuilder --> Validator[HTML Validator]\nValidator --> File[HTML File]"
+    }
+  ]
+}
