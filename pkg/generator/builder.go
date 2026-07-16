@@ -196,7 +196,7 @@ func (b *HTMLBuilder) addDiagramsSection() {
 
 		panels += fmt.Sprintf(`			<div id="%s" class="tab-panel" role="tabpanel" aria-labelledby="%s"%s>
 %s			</div>
-`, panelID, tabID, hidden, b.formatDiagram(diagram))
+`, panelID, tabID, hidden, b.formatDiagram(i, diagram))
 	}
 
 	section += `			</div>
@@ -209,10 +209,10 @@ func (b *HTMLBuilder) addDiagramsSection() {
 	b.sections = append(b.sections, section)
 }
 
-func (b *HTMLBuilder) formatDiagram(diagram schema.Diagram) string {
+func (b *HTMLBuilder) formatDiagram(idx int, diagram schema.Diagram) string {
 	switch diagram.Type {
 	case "mermaid":
-		return b.formatMermaidDiagram(diagram)
+		return b.formatMermaidDiagram(idx, diagram)
 	default:
 		return fmt.Sprintf(`				<div class="callout callout-important">
 					<strong>Unsupported diagram type:</strong>
@@ -222,7 +222,7 @@ func (b *HTMLBuilder) formatDiagram(diagram schema.Diagram) string {
 	}
 }
 
-func (b *HTMLBuilder) formatMermaidDiagram(diagram schema.Diagram) string {
+func (b *HTMLBuilder) formatMermaidDiagram(idx int, diagram schema.Diagram) string {
 	parsed, err := mermaid.Parse(diagram.Mermaid)
 	if err != nil {
 		return fmt.Sprintf(`				<div class="callout callout-important">
@@ -238,6 +238,11 @@ func (b *HTMLBuilder) formatMermaidDiagram(diagram schema.Diagram) string {
 	}
 
 	var out strings.Builder
+	renderedTabID := fmt.Sprintf("mermaid-rendered-tab-%d", idx)
+	renderedPanelID := fmt.Sprintf("mermaid-rendered-panel-%d", idx)
+	sourceTabID := fmt.Sprintf("mermaid-source-tab-%d", idx)
+	sourcePanelID := fmt.Sprintf("mermaid-source-panel-%d", idx)
+
 	out.WriteString(fmt.Sprintf(`				<figure class="mermaid-diagram %s">
 					<figcaption>
 						<strong>%s</strong>
@@ -246,50 +251,190 @@ func (b *HTMLBuilder) formatMermaidDiagram(diagram schema.Diagram) string {
 		out.WriteString(fmt.Sprintf(`						<span>%s</span>
 `, escapeAndFormatText(diagram.Caption)))
 	}
-	out.WriteString(`					</figcaption>
-					<div class="mermaid-rendered" aria-label="Architecture diagram rendered from Mermaid source">
-`)
-
-	nodeLabels := make(map[string]string)
-	for _, node := range parsed.Nodes {
-		nodeLabels[node.ID] = node.Label
-	}
-
-	for i, edge := range parsed.Edges {
-		out.WriteString(fmt.Sprintf(`						<div class="mermaid-edge">
-							<div class="mermaid-node">
-								<span class="node-id">%s</span>
-								<span class="node-label">%s</span>
-							</div>
-`, html.EscapeString(edge.From), html.EscapeString(nodeLabels[edge.From])))
-		if edge.Label != "" {
-			out.WriteString(fmt.Sprintf(`							<div class="mermaid-arrow" aria-label="%s">&rarr; <span>%s</span></div>
-`, html.EscapeString(edge.Label), html.EscapeString(edge.Label)))
-		} else {
-			out.WriteString(`							<div class="mermaid-arrow" aria-hidden="true">&rarr;</div>
-`)
-		}
-		out.WriteString(fmt.Sprintf(`							<div class="mermaid-node">
-								<span class="node-id">%s</span>
-								<span class="node-label">%s</span>
-							</div>
+	out.WriteString(fmt.Sprintf(`					</figcaption>
+					<div class="mermaid-view-tabs" data-mermaid-view-tabs>
+						<div class="mermaid-view-tab-list" role="tablist" aria-label="Mermaid diagram views">
+							<button class="mermaid-view-tab" id="%s" role="tab" type="button" aria-controls="%s" aria-selected="true" tabindex="0">Rendered</button>
+							<button class="mermaid-view-tab" id="%s" role="tab" type="button" aria-controls="%s" aria-selected="false" tabindex="-1">Mermaid</button>
 						</div>
-`, html.EscapeString(edge.To), html.EscapeString(nodeLabels[edge.To])))
-		if i < len(parsed.Edges)-1 {
-			out.WriteString(`						<div class="mermaid-edge-separator" aria-hidden="true"></div>
-`)
-		}
-	}
+						<div class="mermaid-view-panel" id="%s" role="tabpanel" aria-labelledby="%s">
+							<div class="mermaid-rendered" aria-label="Architecture diagram rendered from Mermaid source">
+`, renderedTabID, renderedPanelID, sourceTabID, sourcePanelID, renderedPanelID, renderedTabID))
+	out.WriteString(b.formatMermaidSVG(idx, parsed, diagram.Title))
 
-	out.WriteString(fmt.Sprintf(`					</div>
-					<details class="mermaid-source">
-						<summary>Mermaid source</summary>
-						<pre><code style="white-space: pre-wrap; white-space: pre;">%s</code></pre>
-					</details>
+	out.WriteString(fmt.Sprintf(`							</div>
+						</div>
+						<div class="mermaid-view-panel" id="%s" role="tabpanel" aria-labelledby="%s" hidden>
+							<pre class="mermaid mermaid-source-block"><code class="language-mermaid" style="white-space: pre-wrap; white-space: pre;">%s</code></pre>
+						</div>
+					</div>
 				</figure>
-`, html.EscapeString(diagram.Mermaid)))
+`, sourcePanelID, sourceTabID, html.EscapeString(diagram.Mermaid)))
 
 	return out.String()
+}
+
+type svgPoint struct {
+	x int
+	y int
+}
+
+func (b *HTMLBuilder) formatMermaidSVG(idx int, diagram *mermaid.Diagram, title string) string {
+	const (
+		boxW   = 150
+		boxH   = 64
+		gap    = 82
+		margin = 34
+	)
+
+	horizontal := diagram.Direction == "LR" || diagram.Direction == "RL"
+	nodeCount := len(diagram.Nodes)
+	width := 360
+	height := 220
+	if horizontal {
+		width = margin*2 + nodeCount*boxW + (nodeCount-1)*gap
+	} else {
+		height = margin*2 + nodeCount*boxH + (nodeCount-1)*gap
+	}
+
+	positions := make(map[string]svgPoint)
+	for i, node := range diagram.Nodes {
+		if horizontal {
+			x := margin + i*(boxW+gap)
+			if diagram.Direction == "RL" {
+				x = width - margin - boxW - i*(boxW+gap)
+			}
+			positions[node.ID] = svgPoint{x: x, y: 78}
+		} else {
+			y := margin + i*(boxH+gap)
+			if diagram.Direction == "BT" {
+				y = height - margin - boxH - i*(boxH+gap)
+			}
+			positions[node.ID] = svgPoint{x: 105, y: y}
+		}
+	}
+
+	arrowID := fmt.Sprintf("mermaid-arrowhead-%d", idx)
+	var svg strings.Builder
+	svg.WriteString(fmt.Sprintf(`<svg class="mermaid-svg" role="img" aria-labelledby="mermaid-svg-title-%d" viewBox="0 0 %d %d" xmlns="http://www.w3.org/2000/svg">
+								<title id="mermaid-svg-title-%d">%s</title>
+								<defs>
+									<marker id="%s" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+										<path d="M 0 0 L 10 5 L 0 10 z" class="mermaid-svg-arrowhead"></path>
+									</marker>
+								</defs>
+`, idx, width, height, idx, html.EscapeString(title), arrowID))
+
+	for _, edge := range diagram.Edges {
+		from := positions[edge.From]
+		to := positions[edge.To]
+		x1, y1, x2, y2 := edgeEndpoints(from, to, horizontal, diagram.Direction, boxW, boxH)
+		midX := (x1 + x2) / 2
+		midY := (y1 + y2) / 2
+		if horizontal {
+			midY -= 16
+		} else {
+			midX += 44
+		}
+
+		if horizontal && absInt(x2-x1) > boxW {
+			controlY := minInt(y1, y2) - 48
+			if controlY < 22 {
+				controlY = maxInt(y1, y2) + 48
+			}
+			midY = controlY - 8
+			svg.WriteString(fmt.Sprintf(`								<path class="mermaid-svg-edge" d="M %d %d C %d %d, %d %d, %d %d" marker-end="url(#%s)"></path>
+`, x1, y1, midX, controlY, midX, controlY, x2, y2, arrowID))
+		} else {
+			svg.WriteString(fmt.Sprintf(`								<line class="mermaid-svg-edge" x1="%d" y1="%d" x2="%d" y2="%d" marker-end="url(#%s)"></line>
+`, x1, y1, x2, y2, arrowID))
+		}
+		if edge.Label != "" {
+			svg.WriteString(fmt.Sprintf(`								<text class="mermaid-svg-edge-label" x="%d" y="%d" text-anchor="middle">%s</text>
+`, midX, midY, html.EscapeString(edge.Label)))
+		}
+	}
+
+	for _, node := range diagram.Nodes {
+		pos := positions[node.ID]
+		svg.WriteString(fmt.Sprintf(`								<g class="mermaid-svg-node" transform="translate(%d %d)">
+									<rect width="%d" height="%d" rx="8" ry="8"></rect>
+									<text class="mermaid-svg-node-id" x="%d" y="18" text-anchor="middle">%s</text>
+`, pos.x, pos.y, boxW, boxH, boxW/2, html.EscapeString(node.ID)))
+		for i, line := range splitSVGLabel(node.Label, 20, 2) {
+			svg.WriteString(fmt.Sprintf(`									<text class="mermaid-svg-node-label" x="%d" y="%d" text-anchor="middle">%s</text>
+`, boxW/2, 39+i*16, html.EscapeString(line)))
+		}
+		svg.WriteString(`								</g>
+`)
+	}
+
+	svg.WriteString(`							</svg>
+`)
+	return svg.String()
+}
+
+func edgeEndpoints(from, to svgPoint, horizontal bool, direction string, boxW, boxH int) (int, int, int, int) {
+	if horizontal {
+		if direction == "RL" {
+			return from.x, from.y + boxH/2, to.x + boxW, to.y + boxH/2
+		}
+		return from.x + boxW, from.y + boxH/2, to.x, to.y + boxH/2
+	}
+	if direction == "BT" {
+		return from.x + boxW/2, from.y, to.x + boxW/2, to.y + boxH
+	}
+	return from.x + boxW/2, from.y + boxH, to.x + boxW/2, to.y
+}
+
+func splitSVGLabel(label string, maxLen, maxLines int) []string {
+	words := strings.Fields(label)
+	if len(words) == 0 {
+		return []string{label}
+	}
+
+	lines := make([]string, 0, maxLines)
+	current := ""
+	for _, word := range words {
+		next := word
+		if current != "" {
+			next = current + " " + word
+		}
+		if len(next) > maxLen && current != "" {
+			lines = append(lines, current)
+			current = word
+			if len(lines) == maxLines-1 {
+				break
+			}
+			continue
+		}
+		current = next
+	}
+	if current != "" && len(lines) < maxLines {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (b *HTMLBuilder) addIntuitionSection() {
@@ -765,14 +910,90 @@ section h3 {
 	font-size: 0.95rem;
 }
 
-.mermaid-rendered {
+.mermaid-view-tabs {
 	display: grid;
-	gap: 10px;
+	gap: 12px;
+}
+
+.mermaid-view-tab-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.mermaid-view-tab {
+	border: 1px solid #c8d9e8;
+	border-radius: 6px;
+	padding: 8px 12px;
+	background: #f7fbff;
+	color: #333;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.mermaid-view-tab[aria-selected="true"] {
+	background: #0078d4;
+	border-color: #0078d4;
+	color: white;
+}
+
+.mermaid-view-panel {
+	min-width: 0;
+}
+
+.mermaid-rendered {
 	padding: 16px;
 	border: 1px solid #d8e6f3;
 	border-radius: 6px;
 	background: #f7fbff;
 	overflow-x: auto;
+}
+
+.mermaid-svg {
+	display: block;
+	width: 100%;
+	min-width: 620px;
+	height: auto;
+}
+
+.mermaid-svg-edge {
+	fill: none;
+	stroke: #4b83b6;
+	stroke-width: 2;
+}
+
+.mermaid-svg-arrowhead {
+	fill: #4b83b6;
+}
+
+.mermaid-svg-edge-label {
+	fill: #36546f;
+	font-size: 13px;
+	font-weight: 700;
+	paint-order: stroke;
+	stroke: #f7fbff;
+	stroke-width: 5px;
+}
+
+.mermaid-svg-node rect {
+	fill: white;
+	stroke: #7eb2df;
+	stroke-width: 2;
+	filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.08));
+}
+
+.mermaid-svg-node-id {
+	fill: #0078d4;
+	font-size: 11px;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+.mermaid-svg-node-label {
+	fill: #333;
+	font-size: 14px;
+	font-weight: 700;
 }
 
 .mermaid-edge {
@@ -847,6 +1068,19 @@ section h3 {
 	overflow-x: auto;
 	border-radius: 6px;
 	background: #f8f8f8;
+}
+
+.mermaid-source-block {
+	margin: 0;
+	padding: 14px;
+	overflow-x: auto;
+	border: 1px solid #d8e6f3;
+	border-radius: 6px;
+	background: #f8f8f8;
+	color: #333;
+	font-family: "Monaco", "Menlo", "Consolas", monospace;
+	font-size: 0.9rem;
+	line-height: 1.5;
 }
 
 /* Quiz */
@@ -1078,6 +1312,7 @@ func (b *HTMLBuilder) generateJavaScript() string {
 	return `
 document.addEventListener('DOMContentLoaded', function() {
 	initDiagramTabs();
+	initMermaidViewTabs();
 	initQuiz();
 });
 
@@ -1085,33 +1320,46 @@ function initDiagramTabs() {
 	const tabGroups = document.querySelectorAll('[data-diagram-tabs]');
 
 	tabGroups.forEach(group => {
-		const tabs = Array.from(group.querySelectorAll('[role="tab"]'));
-		const panels = Array.from(group.querySelectorAll('[role="tabpanel"]'));
+		const tabs = Array.from(group.querySelectorAll(':scope > .tab-list > [role="tab"]'));
+		const panels = Array.from(group.querySelectorAll(':scope > [role="tabpanel"]'));
+		wireTabs(tabs, panels);
+	});
+}
 
-		function selectTab(tab) {
-			tabs.forEach(item => {
-				const selected = item === tab;
-				item.setAttribute('aria-selected', selected ? 'true' : 'false');
-				item.setAttribute('tabindex', selected ? '0' : '-1');
-			});
+function initMermaidViewTabs() {
+	const tabGroups = document.querySelectorAll('[data-mermaid-view-tabs]');
 
-			panels.forEach(panel => {
-				panel.hidden = panel.id !== tab.getAttribute('aria-controls');
-			});
-		}
+	tabGroups.forEach(group => {
+		const tabs = Array.from(group.querySelectorAll(':scope > .mermaid-view-tab-list > [role="tab"]'));
+		const panels = Array.from(group.querySelectorAll(':scope > .mermaid-view-panel'));
+		wireTabs(tabs, panels);
+	});
+}
 
-		tabs.forEach((tab, idx) => {
-			tab.addEventListener('click', () => selectTab(tab));
-			tab.addEventListener('keydown', event => {
-				if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
-					return;
-				}
-				event.preventDefault();
-				const delta = event.key === 'ArrowRight' ? 1 : -1;
-				const next = tabs[(idx + delta + tabs.length) % tabs.length];
-				selectTab(next);
-				next.focus();
-			});
+function wireTabs(tabs, panels) {
+	function selectTab(tab) {
+		tabs.forEach(item => {
+			const selected = item === tab;
+			item.setAttribute('aria-selected', selected ? 'true' : 'false');
+			item.setAttribute('tabindex', selected ? '0' : '-1');
+		});
+
+		panels.forEach(panel => {
+			panel.hidden = panel.id !== tab.getAttribute('aria-controls');
+		});
+	}
+
+	tabs.forEach((tab, idx) => {
+		tab.addEventListener('click', () => selectTab(tab));
+		tab.addEventListener('keydown', event => {
+			if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') {
+				return;
+			}
+			event.preventDefault();
+			const delta = event.key === 'ArrowRight' ? 1 : -1;
+			const next = tabs[(idx + delta + tabs.length) % tabs.length];
+			selectTab(next);
+			next.focus();
 		});
 	});
 }
